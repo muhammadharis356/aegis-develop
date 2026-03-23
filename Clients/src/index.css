@@ -1,0 +1,6 @@
+/* React Grid Layout CSS */
+@import 'react-grid-layout/css/styles.css';
+
+:root {
+  font-family: "Geist", "Inter", system-ui, -apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif;
+}

@@ -1,0 +1,167 @@
+import {
+  Column,
+  DataType,
+  ForeignKey,
+  Model,
+  Table,
+} from "sequelize-typescript";
+import { UserModel } from "../user/user.model";
+import { ProjectModel } from "../project/project.model";
+import { OrganizationModel } from "../organization/organization.model";
+
+export type FileSource =
+  | "Assessment tracker group"
+  | "Compliance tracker group"
+  | "Management system clauses group"
+  | "Reference controls group"
+  | "Main clauses group"
+  | "Annex controls group"
+  | "Project risks report"
+  | "Compliance tracker report"
+  | "Assessment tracker report"
+  | "Vendors and risks report"
+  | "All reports"
+  | "Clauses and annexes report"
+  | "AI trust center group"
+  | "ISO 27001 report"
+  | "Models and risks report"
+  | "Training registry report"
+  | "Policy manager report"
+  | "File Manager"
+  | "policy_editor";
+
+export interface File {
+  filename: string;
+  content: Buffer;
+  project_id?: number;
+  uploaded_by: number;
+  uploaded_time: Date;
+  size?: number;
+  file_path?: string;
+  org_id?: number;
+  model_id?: number;
+  source: FileSource;
+}
+
+export interface FileType {
+  id: string;
+  fileName: string;
+  project_id?: number;
+  uploaded_by: number;
+  uploaded_time: Date;
+  type: string;
+  size?: number;
+  file_path?: string;
+  org_id?: number;
+  model_id?: number;
+  source: FileSource;
+}
+
+export interface FileList extends FileType {
+  is_evidence?: boolean; // To separate feedback files from evidence files
+  parent_id?: number; // Could be topic_id for assessment, control_id for control
+  sub_id?: number; // Could be subtopic_id for assessment (intermediate ids)
+  meta_id?: number; // Could be question_id for assessment, sub_control_id for control
+}
+
+@Table({
+  tableName: "files",
+})
+export class FileModel extends Model<File> {
+  @Column({
+    type: DataType.INTEGER,
+    autoIncrement: true,
+    primaryKey: true,
+  })
+  id?: number;
+
+  @Column({
+    type: DataType.STRING,
+  })
+  filename!: string;
+
+  @Column({
+    type: DataType.BLOB,
+  })
+  content!: Buffer;
+
+  @ForeignKey(() => ProjectModel)
+  @Column({
+    type: DataType.INTEGER,
+    allowNull: true,
+  })
+  project_id?: number;
+
+  @ForeignKey(() => UserModel)
+  @Column({
+    type: DataType.INTEGER,
+  })
+  uploaded_by!: number;
+
+  @Column({
+    type: DataType.DATE,
+  })
+  uploaded_time!: Date;
+
+  @Column({
+    type: DataType.BIGINT,
+    allowNull: true,
+  })
+  size?: number;
+
+  @Column({
+    type: DataType.STRING(500),
+    allowNull: true,
+  })
+  file_path?: string;
+
+  @ForeignKey(() => OrganizationModel)
+  @Column({
+    type: DataType.INTEGER,
+    allowNull: true,
+  })
+  org_id?: number;
+
+  @Column({
+    type: DataType.INTEGER,
+    allowNull: true,
+  })
+  model_id?: number;
+
+  @Column({
+    type: DataType.ENUM(
+      "Assessment tracker group",
+      "Compliance tracker group",
+      "Management system clauses group",
+      "Reference controls group",
+      "Main clauses group",
+      "Annex controls group",
+      "Project risks report",
+      "Compliance tracker report",
+      "Assessment tracker report",
+      "Vendors and risks report",
+      "All reports",
+      "Clauses and annexes report",
+      "AI trust center group",
+      "ISO 27001 report",
+      "Models and risks report",
+      "Training registry report",
+      "Policy manager report",
+      "File Manager",
+      "policy_editor",
+    ),
+  })
+  source!: FileSource;
+
+  @Column({
+    type: DataType.STRING,
+  })
+  type!: string;
+
+  @Column({
+    type: DataType.BOOLEAN,
+    allowNull: false,
+    defaultValue: false,
+  })
+  is_demo?: boolean;
+}

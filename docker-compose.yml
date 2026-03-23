@@ -1,0 +1,96 @@
+version: "3.9"
+
+services:
+  postgresdb:
+    image: postgres:16.8
+    volumes:
+      - db:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=$DB_USER
+      - POSTGRES_PASSWORD=$DB_PASSWORD
+      - POSTGRES_DB=$DB_NAME
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "$DB_USER", "-d", "$DB_NAME"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+  redis:
+    image: redis:7
+    expose:
+      - "6379"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+  backend:
+    depends_on:
+      postgresdb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    build:
+      context: ./Servers
+    ports:
+      - $BACKEND_PORT:$BACKEND_PORT
+    environment:
+      - PORT=$BACKEND_PORT
+      - DB_HOST=postgresdb
+      - DB_USER=$DB_USER
+      - DB_PORT=$DB_PORT
+      - DB_PASSWORD=$DB_PASSWORD
+      - DB_NAME=$DB_NAME
+      - MOCK_DATA_ON=$MOCK_DATA_ON
+      - JWT_SECRET=$JWT_SECRET
+      - SMTP_HOST=smtp.gmail.com
+      - SMTP_PORT=587
+      - LLM_EVALS_URL=http://eval_server:8000
+      - REDIS_URL=redis://redis:6379/0
+      - ENCRYPTION_KEY=$ENCRYPTION_KEY
+  frontend:
+    depends_on:
+      - backend
+    build:
+      context: ./Clients
+  worker:
+    depends_on:
+      postgresdb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    build:
+      context: ./Servers
+    command: ["node", "dist/jobs/worker.js"]
+    environment:
+      - DB_HOST=postgresdb
+      - DB_USER=$DB_USER
+      - DB_PORT=$DB_PORT
+      - DB_PASSWORD=$DB_PASSWORD
+      - DB_NAME=$DB_NAME
+      - JWT_SECRET=$JWT_SECRET
+      - REDIS_URL=redis://redis:6379/0
+      - ENCRYPTION_KEY=$ENCRYPTION_KEY
+    restart: unless-stopped
+  eval_server:
+    depends_on:
+      - backend
+      - redis
+    build:
+      context: ./EvalServer
+    expose:
+      - "8000"
+    volumes:
+      - eval_uploads:/app/data/uploads
+    environment:
+      - DB_HOST=postgresdb
+      - DB_USER=$DB_USER
+      - DB_PORT=$DB_PORT
+      - DB_PASSWORD=$DB_PASSWORD
+      - DB_NAME=$DB_NAME
+      - BACKEND_URL=http://backend:$BACKEND_PORT
+      - REDIS_URL=redis://redis:6379/0
+
+volumes:
+  db:
+  eval_uploads:

@@ -1,0 +1,307 @@
+import { TrainingRegistarModel } from "../domain.layer/models/trainingRegistar/trainingRegistar.model";
+import { sequelize } from "../database/db";
+import { QueryTypes, Transaction } from "sequelize";
+import { ITrainingRegister } from "../domain.layer/interfaces/i.trainingRegister";
+import { TenantAutomationActionModel } from "../domain.layer/models/tenantAutomationAction/tenantAutomationAction.model";
+import { replaceTemplateVariables } from "./automation/automation.utils";
+import { enqueueAutomationAction } from "../services/automations/automationProducer";
+import {
+  buildTrainingReplacements,
+  buildTrainingUpdateReplacements,
+} from "./automation/training.automation.utils";
+
+/**
+ *
+ * Create a Training Registar
+ */
+export const createNewTrainingRegistarQuery = async (
+  trainingRegistar: TrainingRegistarModel,
+  tenant: string,
+  transaction: Transaction
+) => {
+  const result = await sequelize.query(
+    `INSERT INTO "${tenant}".trainingregistar (
+            training_name, duration, provider, department, status, people, description
+        ) VALUES (
+            :training_name, :duration, :provider, :department, :status, :people, :description
+        ) RETURNING *`,
+    {
+      replacements: {
+        training_name: trainingRegistar.training_name,
+        duration: trainingRegistar.duration,
+        provider: trainingRegistar.provider,
+        department: trainingRegistar.department,
+        status: trainingRegistar.status,
+        people: trainingRegistar.numberOfPeople,
+        description: trainingRegistar.description,
+      },
+      mapToModel: true,
+      model: TrainingRegistarModel,
+      transaction,
+    }
+  );
+  const createdTrainingRegistar = result[0];
+  const automations = (await sequelize.query(
+    `SELECT
+      pat.key AS trigger_key,
+      paa.key AS action_key,
+      a.id AS automation_id,
+      aa.*
+    FROM public.automation_triggers pat JOIN "${tenant}".automations a ON a.trigger_id = pat.id JOIN "${tenant}".automation_actions aa ON a.id = aa.automation_id JOIN public.automation_actions paa ON aa.action_type_id = paa.id WHERE pat.key = 'training_added' AND a.is_active ORDER BY aa."order" ASC;`,
+    { transaction }
+  )) as [
+    (TenantAutomationActionModel & {
+      trigger_key: string;
+      action_key: string;
+      automation_id: number;
+    })[],
+    number,
+  ];
+  if (automations[0].length > 0) {
+    const automation = automations[0][0];
+    if (automation["trigger_key"] === "training_added") {
+      const params = automation.params!;
+
+      // Build replacements
+      const replacements = buildTrainingReplacements({
+        ...createdTrainingRegistar.dataValues,
+      });
+
+      // Replace variables in subject and body
+      const processedParams = {
+        ...params,
+        subject: replaceTemplateVariables(params.subject || "", replacements),
+        body: replaceTemplateVariables(params.body || "", replacements),
+        automation_id: automation.automation_id,
+      };
+
+      // Enqueue with processed params
+      await enqueueAutomationAction(automation.action_key, {
+        ...processedParams,
+        tenant,
+      });
+    } else {
+      console.warn(
+        `No matching trigger found for key: ${automation["trigger_key"]}`
+      );
+    }
+  }
+  // Return the created TrainingRegistar instance
+  return Array.isArray(result);
+};
+
+/**
+ *
+ * @returns All the training registars in the DB
+ */
+
+export const getAllTrainingRegistarQuery = async (
+  tenant: string
+): Promise<ITrainingRegister[]> => {
+  const trainingRegistars = await sequelize.query(
+    `SELECT * FROM "${tenant}".trainingregistar ORDER BY id ASC`,
+    {
+      mapToModel: true,
+      model: TrainingRegistarModel,
+    }
+  );
+  // Return all training registars or an empty array if none found
+  return Array.isArray(trainingRegistars)
+    ? (trainingRegistars as TrainingRegistarModel[])
+    : [];
+};
+
+/**
+ * Return the training registars by ID // for now keeping it might not need it eventually
+ */
+export const getTrainingRegistarByIdQuery = async (
+  id: number,
+  tenant: string
+): Promise<ITrainingRegister> => {
+  const trainingRegistarsById = await sequelize.query(
+    `SELECT * FROM "${tenant}".trainingregistar WHERE id = :id`,
+    {
+      replacements: { id },
+      mapToModel: true,
+      model: TrainingRegistarModel,
+    }
+  );
+  // Return the first training registar or null if none found
+  return Array.isArray(trainingRegistarsById) &&
+    trainingRegistarsById.length > 0
+    ? (trainingRegistarsById[0] as ITrainingRegister)
+    : (null as any);
+};
+
+/**
+ * Update all the training registars by ID
+ */
+export const updateTrainingRegistarByIdQuery = async (
+  id: number,
+  trainingRegistar: Partial<TrainingRegistarModel>,
+  tenant: string,
+  transaction: Transaction
+): Promise<TrainingRegistarModel> => {
+  const existingTrainingRegistar = await getTrainingRegistarByIdQuery(
+    id,
+    tenant
+  );
+  const updateTrainingRegistar: Partial<
+    Record<keyof TrainingRegistarModel, any> & { people?: number }
+  > = {};
+  const setClause = [
+    "training_name",
+    "duration",
+    "provider",
+    "department",
+    "status",
+    "people",
+    "description",
+  ]
+    .filter((f) => {
+      if (
+        trainingRegistar[f as keyof TrainingRegistarModel] !== undefined &&
+        trainingRegistar[f as keyof TrainingRegistarModel] !== null
+      ) {
+        updateTrainingRegistar[f as keyof TrainingRegistarModel] =
+          trainingRegistar[f as keyof TrainingRegistarModel];
+        return true;
+      }
+      return false;
+    })
+    .map((f) => `${f} = :${f}`)
+    .join(", ");
+
+  const query = `UPDATE "${tenant}".trainingregistar SET ${setClause} WHERE id = :id RETURNING *;`;
+  updateTrainingRegistar.id = id;
+
+  const result = await sequelize.query(query, {
+    replacements: updateTrainingRegistar,
+    mapToModel: true,
+    model: TrainingRegistarModel,
+    // type: QueryTypes.UPDATE,
+    transaction,
+  });
+  const updatedTrainingRegistar = result[0];
+  const automations = (await sequelize.query(
+    `SELECT
+      pat.key AS trigger_key,
+      paa.key AS action_key,
+      a.id AS automation_id,
+      aa.*
+    FROM public.automation_triggers pat JOIN "${tenant}".automations a ON a.trigger_id = pat.id JOIN "${tenant}".automation_actions aa ON a.id = aa.automation_id JOIN public.automation_actions paa ON aa.action_type_id = paa.id WHERE pat.key = 'training_updated' AND a.is_active ORDER BY aa."order" ASC;`,
+    { transaction }
+  )) as [
+    (TenantAutomationActionModel & {
+      trigger_key: string;
+      action_key: string;
+      automation_id: number;
+    })[],
+    number,
+  ];
+  if (automations[0].length > 0) {
+    const automation = automations[0][0];
+    if (automation["trigger_key"] === "training_updated") {
+      const params = automation.params!;
+
+      // Build replacements
+      const replacements = buildTrainingUpdateReplacements(
+        existingTrainingRegistar,
+        {
+          ...updatedTrainingRegistar.dataValues,
+        }
+      );
+
+      // Replace variables in subject and body
+      const processedParams = {
+        ...params,
+        subject: replaceTemplateVariables(params.subject || "", replacements),
+        body: replaceTemplateVariables(params.body || "", replacements),
+        automation_id: automation.automation_id,
+      };
+
+      // Enqueue with processed params
+      await enqueueAutomationAction(automation.action_key, {
+        ...processedParams,
+        tenant,
+      });
+    } else {
+      console.warn(
+        `No matching trigger found for key: ${automation["trigger_key"]}`
+      );
+    }
+  }
+
+  // Return the first updated training registar or null if none found
+  return Array.isArray(result) && result.length > 0
+    ? (updatedTrainingRegistar as TrainingRegistarModel)
+    : (null as any);
+};
+
+/**
+ * Delete training Registar by ID
+ */
+
+export const deleteTrainingRegistarByIdQuery = async (
+  id: number,
+  tenant: string,
+  transaction: Transaction
+): Promise<Boolean> => {
+  const result = await sequelize.query(
+    `DELETE FROM "${tenant}".trainingregistar WHERE id = :id RETURNING *`,
+    {
+      replacements: { id },
+      mapToModel: true,
+      model: TrainingRegistarModel,
+      type: QueryTypes.DELETE,
+      transaction,
+    }
+  );
+  const deletedTrainingRegistar = result[0];
+  const automations = (await sequelize.query(
+    `SELECT
+      pat.key AS trigger_key,
+      paa.key AS action_key,
+      a.id AS automation_id,
+      aa.*
+    FROM public.automation_triggers pat JOIN "${tenant}".automations a ON a.trigger_id = pat.id JOIN "${tenant}".automation_actions aa ON a.id = aa.automation_id JOIN public.automation_actions paa ON aa.action_type_id = paa.id WHERE pat.key = 'training_deleted' AND a.is_active ORDER BY aa."order" ASC;`,
+    { transaction }
+  )) as [
+    (TenantAutomationActionModel & {
+      trigger_key: string;
+      action_key: string;
+      automation_id: number;
+    })[],
+    number,
+  ];
+  if (automations[0].length > 0) {
+    const automation = automations[0][0];
+    if (automation["trigger_key"] === "training_deleted") {
+      const params = automation.params!;
+
+      // Build replacements
+      const replacements = buildTrainingReplacements(deletedTrainingRegistar);
+
+      // Replace variables in subject and body
+      const processedParams = {
+        ...params,
+        subject: replaceTemplateVariables(params.subject || "", replacements),
+        body: replaceTemplateVariables(params.body || "", replacements),
+        automation_id: automation.automation_id,
+      };
+
+      // Enqueue with processed params
+      await enqueueAutomationAction(automation.action_key, {
+        ...processedParams,
+        tenant,
+      });
+    } else {
+      console.warn(
+        `No matching trigger found for key: ${automation["trigger_key"]}`
+      );
+    }
+  }
+
+  // Check if any rows were affected
+  return Array.isArray(result) && result.length > 0;
+};
